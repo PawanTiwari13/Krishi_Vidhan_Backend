@@ -1,0 +1,279 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum RoleType {
+  BUYER
+  SELLER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum ProductStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ARCHIVED
+}
+
+enum CartStatus {
+  ACTIVE
+  CHECKED_OUT
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  IN_TRANSIT
+  DELIVERED
+  CANCELED
+}
+
+enum PaymentMode {
+  ONLINE
+  COD
+}
+
+enum PaymentStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+model State {
+  id        Int        @id @default(autoincrement())
+  name      String     @unique
+  code      String?    @unique
+  divisions Division[]
+  users     User[]
+  products  Product[]
+  createdAt DateTime   @default(now())
+}
+
+model Division {
+  id        Int      @id @default(autoincrement())
+  name      String
+  stateId   Int
+  state     State    @relation(fields: [stateId], references: [id], onDelete: Restrict)
+  users     User[]
+  createdAt DateTime @default(now())
+
+  @@unique([stateId, name])
+  @@index([stateId])
+}
+
+model Role {
+  id          Int        @id @default(autoincrement())
+  name        RoleType   @unique
+  description String?
+  userRoles   UserRole[]
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  fullName     String
+  phoneNumber  String?
+  addressLine  String?
+  gender       String?
+  dob          DateTime?  @db.Date
+  status       UserStatus @default(ACTIVE)
+  creditPaise  Int        @default(0)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  stateId      Int
+  divisionId   Int
+  state        State      @relation(fields: [stateId], references: [id], onDelete: Restrict)
+  division     Division   @relation(fields: [divisionId], references: [id], onDelete: Restrict)
+
+  userRoles    UserRole[]
+  products     Product[]  @relation("SellerProducts")
+  carts        Cart[]
+  orders       Order[]
+  payments     PaymentTransaction[]
+  reviews      Review[]
+
+  @@index([email])
+  @@index([status])
+  @@index([stateId, divisionId])
+}
+
+model UserRole {
+  id         String   @id @default(uuid())
+  userId     String
+  roleId     Int
+  assignedAt DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+}
+
+model Category {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  slug        String    @unique
+  description String?
+  imageUrl    String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products    Product[]
+}
+
+model Product {
+  id                String        @id @default(uuid())
+  title             String
+  description       String
+  pricePaise        Int           // Stored in paise (e.g. ₹150.00 = 15000)
+  quantityAvailable Int
+  unit              String        @default("PACK")
+  qualityGrade      String?
+  originPlace       String?
+  status            ProductStatus @default(PENDING)
+  mediaUrl          String?
+  version           Int           @default(1) // Optimistic locking version counter
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  sellerId          String
+  categoryId        Int
+  stateId           Int
+
+  // Restrict deletion of Seller or Category if Products exist (Prevents historical corruption)
+  seller            User          @relation("SellerProducts", fields: [sellerId], references: [id], onDelete: Restrict)
+  category          Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  state             State         @relation(fields: [stateId], references: [id], onDelete: Restrict)
+
+  cartItems         CartItem[]
+  orderItems        OrderItem[]
+  reviews           Review[]
+
+  @@index([status, categoryId])
+  @@index([sellerId, status])
+  @@index([stateId, status])
+  @@index([createdAt])
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String
+  status    CartStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+
+  @@index([userId, status])
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+  cartId    String
+  productId String
+  quantity  Int      @default(1)
+  addedAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, productId])
+  @@index([cartId])
+}
+
+model Order {
+  id            String        @id @default(uuid())
+  orderNumber   String        @unique
+  userId        String
+  subtotalPaise Int
+  shippingPaise Int           @default(0)
+  totalPaise    Int
+  paymentMode   PaymentMode   @default(ONLINE)
+  paymentStatus PaymentStatus @default(INITIATED)
+  status        OrderStatus   @default(PENDING_PAYMENT)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items         OrderItem[]
+  transactions  PaymentTransaction[]
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([orderNumber])
+}
+
+model OrderItem {
+  id             String   @id @default(uuid())
+  orderId        String
+  productId      String
+  sellerId       String
+  productTitle   String
+  unit           String
+  unitPricePaise Int      // Immutable price snapshot captured at checkout
+  quantity       Int
+
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([sellerId])
+  @@index([productId])
+}
+
+model PaymentTransaction {
+  id                String        @id @default(uuid())
+  orderId           String?
+  userId            String
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?       @unique
+  razorpaySignature String?
+  amountPaise       Int
+  currency          String        @default("INR")
+  status            PaymentStatus @default(INITIATED)
+  isUtilized        Boolean       @default(false) // Anti-replay protection flag
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  order             Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  user              User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([razorpayOrderId])
+  @@index([userId, status])
+}
+
+model Review {
+  id                 String   @id @default(uuid())
+  rating             Int      // 1 to 5
+  comment            String
+  isVerifiedPurchase Boolean  @default(true)
+  productId          String
+  userId             String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, userId])
+  @@index([productId, createdAt])
+}
+
